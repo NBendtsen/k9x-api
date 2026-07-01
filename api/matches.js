@@ -1,7 +1,6 @@
 // K9X Esport — match feed
 // Vercel serverless function: fetches results + upcoming from vlr.gg
 
-
 const TEAM_ID   = 21696;
 const TEAM_SLUG = 'esperg-rde-esport-k9x';
 
@@ -69,7 +68,9 @@ async function fetchMatches(debug) {
     if (r2.ok) {
       var html = await r2.text();
       log.vlrgg.htmlLength = html.length;
-      log.vlrgg.sampleHtml = html.slice(0, 800); // first 800 chars for debug
+      var matchIdx = html.indexOf('match-item');
+      log.vlrgg.matchFound = matchIdx > -1;
+      log.vlrgg.matchSection = matchIdx > -1 ? html.slice(matchIdx - 50, matchIdx + 1500) : html.slice(5000, 6500);
       var out2 = scrapeHtml(html);
       log.vlrgg.results = out2.results.length;
       log.vlrgg.upcoming = out2.upcoming.length;
