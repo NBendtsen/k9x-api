@@ -156,16 +156,21 @@ function scrapeHtml(html) {
       var k9xScore   = scoreNums[0] != null ? scoreNums[0] : null;
       var oppScore   = scoreNums[1] != null ? scoreNums[1] : null;
 
-      // Team names from m-item-team-name spans in pre block
-      var names = [];
-      var tnRe  = /m-item-team-name[^>]*>\s*([\s\S]+?)\s*<\/span>/g;
+      // K9X (home) is in pre; opponent is in extended post (up to 6000 chars after match-id)
+      var extPost = html.slice(pos, pos + 6000);
+      var tnRe = /m-item-team-name[^>]*>\s*([\s\S]+?)\s*<\/span>/g;
       var tn;
+      var k9xFound = false;
       while ((tn = tnRe.exec(pre)) !== null) {
-        var n = tn[1].replace(/<[^>]+>/g,'').trim();
-        if (n && names.indexOf(n) === -1) names.push(n);
+        if (isK9X({ name: tn[1].replace(/<[^>]+>/g,'').trim() })) { k9xFound = true; break; }
       }
-      if (names.length < 2) continue;
-      var opp = names.filter(function(n){ return !isK9X({ name:n }); })[0];
+      if (!k9xFound) continue;
+      tnRe.lastIndex = 0;
+      var opp = null;
+      while ((tn = tnRe.exec(extPost)) !== null) {
+        var n = tn[1].replace(/<[^>]+>/g,'').trim();
+        if (n && !isK9X({ name: n })) { opp = n; break; }
+      }
       if (!opp) continue;
 
       // Event name — font-weight:700 div near top of pre block
@@ -178,8 +183,8 @@ function scrapeHtml(html) {
       var stage = (stM ? stM[0].replace(/&[a-z]+;/g,' ').trim() : '') +
                   (rnM ? ' · ' + rnM[0] : '');
 
-      // Date yyyy/mm/dd in post block
-      var dtM = post.match(/(\d{4})\/(\d{2})\/(\d{2})/);
+      // Date yyyy/mm/dd in extended post block
+      var dtM = extPost.match(/(\d{4})\/(\d{2})\/(\d{2})/);
       var date = dtM
         ? (parseInt(dtM[3]) + ' ' + MONTHS[parseInt(dtM[2])-1] + ' ' + dtM[1])
         : '';
