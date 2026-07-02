@@ -67,7 +67,12 @@ async function fetchMatches(debug) {
     clearTimeout(t2);
     log.vlrgg = { url: vlrUrl, status: r2.status };
     if (r2.ok) {
-      var html = await r2.text();
+      var raw  = await r2.text();
+      // Cloudflare sometimes serves page content as HTML-encoded entities inside
+      // a script payload — decode once so CSS class names are searchable.
+      var html = raw.indexOf('&lt;') !== -1
+        ? raw.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
+        : raw;
       log.vlrgg.htmlLength = html.length;
       var matchIdx = html.indexOf('match-item');
       log.vlrgg.matchFound = matchIdx > -1;
