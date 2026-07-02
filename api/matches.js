@@ -77,6 +77,12 @@ async function fetchMatches(debug) {
       var matchIdx = html.indexOf('match-item');
       log.vlrgg.matchFound = matchIdx > -1;
       log.vlrgg.matchSection = matchIdx > -1 ? html.slice(matchIdx - 50, matchIdx + 1500) : html.slice(5000, 6500);
+      if (!matchIdx || matchIdx < 0) {
+        // Sample 4 windows across the page to find where match data lives
+        log.vlrgg.sample10k = html.slice(10000, 10800);
+        log.vlrgg.sample20k = html.slice(20000, 20800);
+        log.vlrgg.sample30k = html.slice(30000, 30800);
+      }
       var out2 = scrapeHtml(html);
       log.vlrgg.results = out2.results.length;
       log.vlrgg.upcoming = out2.upcoming.length;
