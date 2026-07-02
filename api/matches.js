@@ -147,8 +147,10 @@ function scrapeHtml(html) {
 
     try {
       // Win / loss / upcoming
-      var isLoss     = /mod-loss/.test(post.slice(0, 200));
-      var isWin      = /mod-win/.test(post.slice(0, 200));
+      // Win / loss derived from scores (mod-loss appears before data-match-id so CSS check is unreliable)
+      var hasScores = k9xScore != null && oppScore != null;
+      var isLoss    = hasScores && k9xScore < oppScore;
+      var isWin     = hasScores && k9xScore > oppScore;
 
       // Scores — appear as <span>N</span> right after the opening result div
       var scoreNums  = (post.match(/<span>(\d+)<\/span>/g) || [])
