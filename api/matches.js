@@ -67,22 +67,14 @@ async function fetchMatches(debug) {
     clearTimeout(t2);
     log.vlrgg = { url: vlrUrl, status: r2.status };
     if (r2.ok) {
-      var raw  = await r2.text();
-      // Cloudflare sometimes serves page content as HTML-encoded entities inside
-      // a script payload — decode once so CSS class names are searchable.
-      var html = raw.indexOf('&lt;') !== -1
-        ? raw.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
-        : raw;
+      var raw = await r2.text();
+      // vlr.gg returns HTML-entity-encoded content (Cloudflare); decode before parsing
+      var html = raw
+        .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&')
+        .replace(/&quot;/g,'"').replace(/&#39;/g,"'");
       log.vlrgg.htmlLength = html.length;
-      var matchIdx = html.indexOf('match-item');
+      var matchIdx = html.indexOf('data-match-id=');
       log.vlrgg.matchFound = matchIdx > -1;
-      log.vlrgg.matchSection = matchIdx > -1 ? html.slice(matchIdx - 50, matchIdx + 1500) : html.slice(5000, 6500);
-      if (!matchIdx || matchIdx < 0) {
-        // Sample 4 windows across the page to find where match data lives
-        log.vlrgg.sample10k = html.slice(10000, 10800);
-        log.vlrgg.sample20k = html.slice(20000, 20800);
-        log.vlrgg.sample30k = html.slice(30000, 30800);
-      }
       var out2 = scrapeHtml(html);
       log.vlrgg.results = out2.results.length;
       log.vlrgg.upcoming = out2.upcoming.length;
@@ -130,73 +122,88 @@ function norm(item, status) {
 }
 
 // ── vlr.gg HTML scraper ───────────────────────────────────────────────────────
+// vlr.gg structure (confirmed from live page samples):
+//   data-match-id="N"  →  anchor for each result row
+//   m-item-team-name   →  team names
+//   m-item-result mod-win / mod-loss  →  outcome + scores in <span>N</span>
+//   m-item-date        →  date as yyyy/mm/dd
 function scrapeHtml(html) {
   var results  = [];
   var upcoming = [];
+  var seen     = {};
+  var MONTHS   = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 
-  // vlr.gg wraps each match row in <a class="wf-module-item match-item ...">
-  // Try match-item first, fall back to wf-module-item
-  var splitKey = 'match-item';
-  if (html.indexOf('match-item') === -1 && html.indexOf('wf-module-item') !== -1) {
-    splitKey = 'wf-module-item';
-  }
-  var blocks = html.split(splitKey);
+  var idRe = /data-match-id="(\d+)"/g;
+  var m;
+  while ((m = idRe.exec(html)) !== null) {
+    var matchId = m[1];
+    if (seen[matchId]) continue; // expandable sub-items also carry data-match-id
+    seen[matchId] = true;
 
-  for (var i = 1; i < Math.min(blocks.length, 40); i++) {
-    var block = blocks[i];
+    var pos   = m.index;
+    // block before pos holds event + team names; block after holds scores + date
+    var pre   = html.slice(Math.max(0, pos - 2000), pos);
+    var post  = html.slice(pos, pos + 600);
+
     try {
-      var completed = /mod-completed/i.test(block) || /match-item-status--completed/i.test(block);
-      var live      = /mod-live/i.test(block);
+      // Win / loss / upcoming
+      var isLoss     = /mod-loss/.test(post.slice(0, 200));
+      var isWin      = /mod-win/.test(post.slice(0, 200));
 
-      // Event name
-      var evMatch    = block.match(/match-item-event["\s][^>]*>\s*<[^>]+>\s*([^<]+)/);
-      var serMatch   = block.match(/match-item-event-series["\s][^>]*>\s*([^<\n]+)/);
+      // Scores — appear as <span>N</span> right after the opening result div
+      var scoreNums  = (post.match(/<span>(\d+)<\/span>/g) || [])
+                        .map(function(s){ return parseInt(s.replace(/<\/?span>/g,'')); });
+      var k9xScore   = scoreNums[0] != null ? scoreNums[0] : null;
+      var oppScore   = scoreNums[1] != null ? scoreNums[1] : null;
 
-      // Date
-      var dateMatch  = block.match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{2,4})/);
-      var dateMatch2 = block.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}/i);
-
-      // Team names — vlr.gg uses .match-item-vs-team-name
-      var teamRe   = /match-item-vs-team-name[^>]*>\s*([^<]+?)\s*</g;
-      var scoreRe  = /match-item-vs-team-score[^>]*>\s*(\d+)\s*</g;
-      // Also try simpler selectors as fallback
-      var teamRe2  = /wf-title-med[^>]*>\s*([^<]+?)\s*</g;
-      var scoreRe2 = /match-score[^>]*>\s*(\d+)\s*</g;
-
-      var teamNames = [], scores = [], m;
-      while ((m = teamRe.exec(block))  !== null) teamNames.push(m[1].trim());
-      while ((m = scoreRe.exec(block)) !== null) scores.push(parseInt(m[1]));
-      if (!teamNames.length) {
-        while ((m = teamRe2.exec(block))  !== null) teamNames.push(m[1].trim());
-        while ((m = scoreRe2.exec(block)) !== null) scores.push(parseInt(m[1]));
+      // Team names from m-item-team-name spans in pre block
+      var names = [];
+      var tnRe  = /m-item-team-name[^>]*>\s*([\s\S]+?)\s*<\/span>/g;
+      var tn;
+      while ((tn = tnRe.exec(pre)) !== null) {
+        var n = tn[1].replace(/<[^>]+>/g,'').trim();
+        if (n && names.indexOf(n) === -1) names.push(n);
       }
-      if (teamNames.length < 2) continue;
+      if (names.length < 2) continue;
+      var opp = names.filter(function(n){ return !isK9X({ name:n }); })[0];
+      if (!opp) continue;
 
-      var k9xFirst = isK9X({ name: teamNames[0] });
-      var aScore   = k9xFirst ? (scores[0] != null ? scores[0] : null) : (scores[1] != null ? scores[1] : null);
-      var bScore   = k9xFirst ? (scores[1] != null ? scores[1] : null) : (scores[0] != null ? scores[0] : null);
-      var opp      = k9xFirst ? teamNames[1] : teamNames[0];
+      // Event name — font-weight:700 div near top of pre block
+      var evM = pre.match(/font-weight:\s*700[^>]*>\s*([\s\S]*?)<\/div>/);
+      var eventName = evM ? evM[1].replace(/<[^>]+>/g,'').trim() : 'Valorant';
 
-      var status = completed ? 'result' : 'upcoming';
-      var match = {
-        id:     Math.random().toString(36).slice(2),
-        event:  (evMatch && evMatch[1].trim()) || 'Valorant',
-        stage:  (serMatch && serMatch[1].trim()) || '',
-        date:   (dateMatch2 && dateMatch2[0]) || (dateMatch && dateMatch[0]) || '',
+      // Stage — Group Stage / Playoffs / SF / R1 …
+      var stM = pre.match(/(Group Stage|Playoffs|Play.In|Swiss)[^<\n]*/i);
+      var rnM = pre.match(/\b(R\d+|SF|QF|GF)\b/);
+      var stage = (stM ? stM[0].replace(/&[a-z]+;/g,' ').trim() : '') +
+                  (rnM ? ' · ' + rnM[0] : '');
+
+      // Date yyyy/mm/dd in post block
+      var dtM = post.match(/(\d{4})\/(\d{2})\/(\d{2})/);
+      var date = dtM
+        ? (parseInt(dtM[3]) + ' ' + MONTHS[parseInt(dtM[2])-1] + ' ' + dtM[1])
+        : '';
+
+      var status = (isWin || isLoss) ? 'result' : 'upcoming';
+      var match  = {
+        id:     matchId,
+        event:  eventName,
+        stage:  stage.trim(),
+        date:   date,
         status: status,
-        teamA:  { name: 'K9X', score: aScore },
-        teamB:  { name: opp, tag: tagFrom({ name: opp }), score: bScore },
-        result: (completed && aScore != null && bScore != null) ? (aScore > bScore ? 'W' : 'L') : null,
+        teamA:  { name:'K9X', score:k9xScore },
+        teamB:  { name:opp, tag:tagFrom({ name:opp }), score:oppScore },
+        result: isLoss ? 'L' : (isWin ? 'W' : null),
         format: '',
         time:   'TBD',
       };
 
-      if (completed || live) results.push(match);
+      if (status === 'result') results.push(match);
       else upcoming.push(match);
-    } catch (_) {}
+    } catch(_) {}
   }
 
-  return { results: results, upcoming: upcoming };
+  return { results:results, upcoming:upcoming };
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
